@@ -4,14 +4,14 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { OctoKit, OctoKitIssue } from '../api/octokit';
+import { Action } from '../common/Action';
 import { getInput, getRequiredInput } from '../common/utils';
 import {
 	FeatureRequestConfig,
 	FeatureRequestOnLabel,
-	FeatureRequestQueryer,
 	FeatureRequestOnMilestone,
+	FeatureRequestQueryer,
 } from './FeatureRequest';
-import { Action } from '../common/Action';
 
 const config: FeatureRequestConfig = {
 	milestones: {
@@ -39,10 +39,6 @@ const config: FeatureRequestConfig = {
 class FeatureRequest extends Action {
 	id = 'FeatureRequest';
 
-	async onTriggered(github: OctoKit) {
-		await new FeatureRequestQueryer(github, config).run();
-	}
-
 	async onLabeled(github: OctoKitIssue, label: string) {
 		if (label === config.featureRequestLabel) {
 			await new FeatureRequestOnLabel(
@@ -60,6 +56,14 @@ class FeatureRequest extends Action {
 			config.comments.init!,
 			config.milestones.candidateID,
 		).run();
+	}
+
+	async onTriggered(_github: OctoKit) {
+		const auth = await this.getToken();
+		const repo = getRequiredInput('repo');
+		const owner = getRequiredInput('owner');
+		const github = new OctoKit(auth, { owner, repo });
+		await new FeatureRequestQueryer(github, config).run();
 	}
 }
 

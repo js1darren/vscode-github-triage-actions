@@ -4,12 +4,12 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 Object.defineProperty(exports, "__esModule", { value: true });
+const core_1 = require("@actions/core");
+const child_process_1 = require("child_process");
 const fs_1 = require("fs");
 const path_1 = require("path");
-const utils_1 = require("../../../common/utils");
 const Action_1 = require("../../../common/Action");
-const child_process_1 = require("child_process");
-const core_1 = require("@actions/core");
+const utils_1 = require("../../../common/utils");
 const blobStorage_1 = require("../../blobStorage");
 const minToDay = 0.0007;
 const fromInput = (0, core_1.getInput)('from') || undefined;
@@ -21,7 +21,8 @@ const from = fromInput ? (0, utils_1.daysAgoToHumanReadbleDate)(+fromInput * min
 const until = (0, utils_1.daysAgoToHumanReadbleDate)(+(0, utils_1.getRequiredInput)('until') * minToDay);
 const createdQuery = `created:` + (from ? `${from}..${until}` : `<${until}`);
 const blobContainer = (0, utils_1.getRequiredInput)('blobContainerName');
-const blobStorageKey = (0, utils_1.getRequiredInput)('blobStorageKey');
+const repo = (0, utils_1.getRequiredInput)('repo');
+const owner = (0, utils_1.getRequiredInput)('owner');
 class FetchIssues extends Action_1.Action {
     constructor() {
         super(...arguments);
@@ -29,11 +30,26 @@ class FetchIssues extends Action_1.Action {
     }
     async onTriggered(github) {
         var _a;
-        const query = `${createdQuery} is:open no:assignee ${excludeLabels}`;
+        const query = `repo:${owner}/${repo} ${createdQuery} is:open no:assignee ${excludeLabels}`;
         const data = [];
         for await (const page of github.query({ q: query })) {
             for (const issue of page) {
                 const issueData = await issue.getIssue();
+                if (!issueData)
+                    continue;
+                // Probably spam. Tagged for later review
+                if (issueData.author.name === 'ghost') {
+                    (0, utils_1.safeLog)(`Tagging issue  #${issueData.number} as invalid`);
+                    try {
+                        await issue.addLabel('invalid');
+                        await issue.closeIssue('not_planned');
+                        await issue.lockIssue();
+                    }
+                    catch (e) {
+                        (0, utils_1.safeLog)(`Failed to triage invalid issue #${issueData.number}: ${e}`);
+                    }
+                    continue;
+                }
                 let performedPRAssignment = false;
                 let additionalInfo = '';
                 if (issueData.isPr) {
@@ -50,6 +66,8 @@ class FetchIssues extends Action_1.Action {
                                 const linkedIssueData = await github
                                     .getIssueByNumber(+linkedIssue)
                                     .getIssue();
+                                if (!linkedIssueData)
+                                    continue;
                                 const normalized = (0, utils_1.normalizeIssue)(linkedIssueData);
                                 additionalInfo = `\n\n${normalized.title}\n\n${normalized.body}`;
                                 const linkedIssueAssignee = linkedIssueData.assignees[0];
@@ -81,9 +99,9 @@ class FetchIssues extends Action_1.Action {
         const config = await github.readConfig((0, utils_1.getRequiredInput)('configPath'));
         (0, fs_1.writeFileSync)((0, path_1.join)(__dirname, '../configuration.json'), JSON.stringify(config));
         (0, utils_1.safeLog)('dowloading area model');
-        await (0, blobStorage_1.downloadBlobFile)('area_model.zip', blobContainer, blobStorageKey);
+        await (0, blobStorage_1.downloadBlobFile)('area_model.zip', blobContainer);
         (0, utils_1.safeLog)('dowloading assignee model');
-        await (0, blobStorage_1.downloadBlobFile)('assignee_model.zip', blobContainer, blobStorageKey);
+        await (0, blobStorage_1.downloadBlobFile)('assignee_model.zip', blobContainer);
         const classifierDeepRoot = (0, path_1.join)(__dirname, '..', '..');
         const blobStorage = (0, path_1.join)(classifierDeepRoot, 'blobStorage');
         const models = (0, path_1.join)(classifierDeepRoot, 'apply');

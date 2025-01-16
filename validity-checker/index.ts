@@ -4,16 +4,19 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { OctoKitIssue } from '../api/octokit';
-import { getRequiredInput } from '../common/utils';
-import { CopyCat } from './CopyCat';
 import { Action } from '../common/Action';
+import { ValidtyChecker } from './ValidtyChecker';
 
-class CopyCatAction extends Action {
-	id = 'CopyCat';
+class ValidtyCheckerAction extends Action {
+	id = 'ValidtyChecker';
 
 	async onOpened(issue: OctoKitIssue) {
-		await new CopyCat(issue, getRequiredInput('owner'), getRequiredInput('repo')).run();
+		await new ValidtyChecker(issue).run();
+	}
+
+	async onReopened(issue: OctoKitIssue): Promise<void> {
+		await new ValidtyChecker(issue).run();
 	}
 }
 
-new CopyCatAction().run() // eslint-disable-line
+new ValidtyCheckerAction().run() // eslint-disable-line

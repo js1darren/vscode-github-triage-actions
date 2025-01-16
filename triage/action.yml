@@ -1,6 +1,8 @@
-name: "Classifier: Monitor"
-description: Alerts when assignees added by the bot are unassigned
+name: New Issue Triager
+description: Triage new issues to one of the assignees from the provided list
 inputs:
+  token:
+    description: 'GitHub token with issue, comment, and label read/write permissions'
   app_id:
     description: GitHub App ID
     required: true
@@ -20,16 +22,13 @@ inputs:
     description: Issue number
     required: true
   event:
-    description: Event name for a triggered action. Otherwise, this is obtained from the github context.
+    description: Event name for a triggered action. Otherwise, this is obtained from the GitHub context.
     required: true
   action:
-    description: Action name for a triggered action. Otherwise, this is obtained from the github context.
+    description: Action name for a triggered action. Otherwise, this is obtained from the GitHub context.
     required: true
-  payload:
-    description: Payload object for the github action
-    required: true
-  botName:
-    description: The login of the bot
+  assignees:
+    description: Pipe-separated list of assignees to triage new issues to
     required: true
 runs:
   using: 'node20'

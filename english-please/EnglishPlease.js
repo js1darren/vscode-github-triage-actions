@@ -15,6 +15,8 @@ class EnglishPleaseLabler {
     }
     async run() {
         const issue = await this.issue.getIssue();
+        if (!issue)
+            return false;
         const { body, title } = (0, utils_1.normalizeIssue)(issue);
         const translationChunk = `${title} ${body}`;
         const nonenglishChunk = translationChunk.replace(usKeyboardChars, '').replace(emojiChars, '');
@@ -86,6 +88,8 @@ class LanguageSpecificLabeler {
     async run() {
         var _a, _b, _c;
         const issue = await this.issue.getIssue();
+        if (!issue)
+            return;
         const { body, title } = (0, utils_1.normalizeIssue)(issue);
         const translationChunk = `${title} ${body}`;
         for await (const page of this.issue.getComments()) {
@@ -96,6 +100,7 @@ class LanguageSpecificLabeler {
             }
         }
         const language = (_a = (await this.detectLanguage(translationChunk))) === null || _a === void 0 ? void 0 : _a.toLowerCase();
+        (0, utils_1.safeLog)('Detected language:', language !== null && language !== void 0 ? language : 'undefined');
         if (!language || language === 'en') {
             const languagelabel = issue.labels.find((label) => label.startsWith(this.translatorRequestedLabelPrefix));
             if (languagelabel)

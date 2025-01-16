@@ -1,8 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+const Action_1 = require("../common/Action");
 const utils_1 = require("../common/utils");
 const EnglishPlease_1 = require("./EnglishPlease");
-const Action_1 = require("../common/Action");
 const nonEnglishLabel = (0, utils_1.getRequiredInput)('nonEnglishLabel');
 const needsMoreInfoLabel = (0, utils_1.getRequiredInput)('needsMoreInfoLabel');
 const translatorRequestedLabelPrefix = (0, utils_1.getRequiredInput)('translatorRequestedLabelPrefix');

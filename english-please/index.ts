@@ -1,7 +1,7 @@
-import { getRequiredInput } from '../common/utils';
-import { LanguageSpecificLabeler, EnglishPleaseLabler } from './EnglishPlease';
 import { OctoKitIssue } from '../api/octokit';
 import { Action } from '../common/Action';
+import { getRequiredInput } from '../common/utils';
+import { EnglishPleaseLabler, LanguageSpecificLabeler } from './EnglishPlease';
 
 const nonEnglishLabel = getRequiredInput('nonEnglishLabel');
 const needsMoreInfoLabel = getRequiredInput('needsMoreInfoLabel');

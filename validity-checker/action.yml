@@ -1,5 +1,5 @@
-name: Commands
-description: Respond to commands given in the form of either labels or comments by contributors or authorized community members
+name: Checks for Valid Issues and PRs
+description: Checks for valid issues and PRs in the destination repo
 inputs:
   app_id:
     description: GitHub App ID
@@ -19,24 +19,13 @@ inputs:
   issue_number:
     description: Issue number
     required: false
-  config-path:
-    description: Name of .json file (no extension) in .github/ directory of repo holding configuration for this action
-    required: true
-  repository:
-    description: Repository object for a triggered action. Otherwise, this is obtained from the github context.
-    required: false
-  issue:
-    description: Issue object for a triggered action. Otherwise, this is obtained from the github context.
-    required: false
   event:
     description: Event name for a triggered action. Otherwise, this is obtained from the github context.
     required: false
   action:
     description: Action name for a triggered action. Otherwise, this is obtained from the github context.
     required: false
-  comment:
-    description: Comment object for a triggered action. Otherwise, this is obtained from the github context.
-    required: false
+
 runs:
   using: 'node20'
   main: 'index.js'

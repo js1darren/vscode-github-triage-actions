@@ -5,19 +5,19 @@
 
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { context } from '@actions/github';
 import { OctoKit, OctoKitIssue } from '../../../api/octokit';
-import { getRequiredInput, getInput, safeLog } from '../../../common/utils';
-import { Action } from '../../../common/Action';
+import { Action, getAuthenticationToken } from '../../../common/Action';
+import { getInput, getRequiredInput, safeLog } from '../../../common/utils';
 
-const token = getRequiredInput('token');
-const allowLabels = (getInput('allowLabels') || '').split('|');
 const debug = !!getInput('__debug');
+const owner = getRequiredInput('owner');
+const repo = getRequiredInput('repo');
 
 type ClassifierConfig = {
 	labels?: {
 		[area: string]: { applyLabel?: boolean; comment?: string; assign?: [string] };
 	};
+	randomAssignment?: boolean;
 	assignees?: {
 		[assignee: string]: { assign: boolean; comment?: string };
 	};
@@ -27,25 +27,25 @@ class ApplyLabels extends Action {
 	id = 'Classifier/Apply/ApplyLabels';
 
 	async onTriggered(github: OctoKit) {
+		const token = await getAuthenticationToken();
 		const config: ClassifierConfig = await github.readConfig(getRequiredInput('config-path'));
 		const labelings: { number: number; area: string; assignee: string }[] = JSON.parse(
 			readFileSync(join(__dirname, '../issue_labels.json'), { encoding: 'utf8' }),
 		);
 
 		for (const labeling of labelings) {
-			const issue = new OctoKitIssue(token, context.repo, { number: labeling.number });
+			const issue = new OctoKitIssue(token, { owner, repo }, { number: labeling.number });
 			const issueData = await issue.getIssue();
-			if (
-				!debug &&
-				(issueData.assignee || issueData.labels.some((label) => !allowLabels.includes(label)))
-			) {
-				safeLog('skipping');
+			if (!issueData) continue;
+
+			if (!debug && issueData.assignee) {
+				safeLog('skipping, already assigned to: ', issueData.assignee);
 				continue;
 			}
 
 			const assignee = labeling.assignee;
 			if (assignee) {
-				safeLog('has assignee');
+				safeLog('has assignee:', assignee);
 
 				if (debug) {
 					if (!(await github.repoHasLabel(assignee))) {
@@ -56,12 +56,44 @@ class ApplyLabels extends Action {
 				}
 
 				const assigneeConfig = config.assignees?.[assignee];
-				safeLog(JSON.stringify({ assigneeConfig }));
+				if (assigneeConfig) {
+					safeLog(JSON.stringify({ assigneeConfig }));
 
-				await Promise.all<any>([
-					assigneeConfig?.assign ? !debug && issue.addAssignee(assignee) : Promise.resolve(),
-					assigneeConfig?.comment ? issue.postComment(assigneeConfig.comment) : Promise.resolve(),
-				]);
+					await Promise.all<any>([
+						assigneeConfig?.assign ? !debug && issue.addAssignee(assignee) : Promise.resolve(),
+						assigneeConfig?.comment
+							? issue.postComment(assigneeConfig.comment)
+							: Promise.resolve(),
+					]);
+				} else if (!debug) {
+					await issue.addAssignee(assignee);
+				}
+			} else if (config.randomAssignment && config.labels) {
+				safeLog('could not find assignee, picking a random one...');
+				const available = Object.keys(config.labels).reduce((acc, area) => {
+					const areaConfig = config.labels?.[area];
+					if (areaConfig?.assign) {
+						acc.push(...areaConfig.assign);
+					}
+					return acc;
+				}, [] as string[]);
+				if (available) {
+					// Shuffle the array
+					for (let i = available.length - 1; i > 0; i--) {
+						const j = Math.floor(Math.random() * (i + 1));
+						[available[i], available[j]] = [available[j], available[i]];
+					}
+					if (!debug) {
+						const issue = new OctoKitIssue(token, { owner, repo }, { number: labeling.number });
+
+						await issue.addLabel('triage-needed');
+						const randomSelection = available[0];
+						safeLog('assigning', randomSelection);
+						await issue.addAssignee(randomSelection);
+					}
+				} else {
+					safeLog('error assigning random: no assigness found');
+				}
 			}
 
 			const label = labeling.area;

@@ -8,7 +8,7 @@ exports.meetsReviewThreshold = exports.getTeamMemberReviews = exports.CodeReview
 const web_api_1 = require("@slack/web-api");
 const utils_1 = require("../common/utils");
 function createPRObject(pullRequestFromApi) {
-    var _a, _b;
+    var _a, _b, _c, _d;
     const pr = {
         number: pullRequestFromApi.number,
         body: pullRequestFromApi.body || '',
@@ -21,28 +21,28 @@ function createPRObject(pullRequestFromApi) {
         baseBranchName: (_a = pullRequestFromApi.base.ref) !== null && _a !== void 0 ? _a : '',
         headBranchName: (_b = pullRequestFromApi.head.ref) !== null && _b !== void 0 ? _b : '',
         title: pullRequestFromApi.title,
+        headLabel: ((_c = pullRequestFromApi.head.repo) === null || _c === void 0 ? void 0 : _c.full_name) || '',
+        fork: ((_d = pullRequestFromApi.head.repo) === null || _d === void 0 ? void 0 : _d.fork) || false,
     };
     return pr;
 }
 exports.createPRObject = createPRObject;
 class Chatter {
-    constructor(slackToken, notificationChannel) {
+    constructor(slackToken, notificationChannelID) {
         this.slackToken = slackToken;
-        this.notificationChannel = notificationChannel;
+        this.notificationChannelID = notificationChannelID;
     }
     async getChat() {
         const web = new web_api_1.WebClient(this.slackToken);
-        const memberships = await listAllMemberships(web);
-        const codereviewChannel = this.notificationChannel && memberships.find((m) => m.name === this.notificationChannel);
-        if (!codereviewChannel) {
-            throw Error(`Slack channel not found: ${this.notificationChannel}`);
+        if (!this.notificationChannelID) {
+            throw Error(`Slack channel not provided: ${this.notificationChannelID}`);
         }
-        return { client: web, channel: codereviewChannel.id };
+        return { client: web, channel: this.notificationChannelID };
     }
 }
 class CodeReviewChatDeleter extends Chatter {
-    constructor(slackToken, slackElevatedUserToken, notificationChannel, prUrl) {
-        super(slackToken, notificationChannel);
+    constructor(slackToken, slackElevatedUserToken, notificationChannelId, prUrl) {
+        super(slackToken, notificationChannelId);
         this.prUrl = prUrl;
         this.elevatedClient = slackElevatedUserToken ? new web_api_1.WebClient(slackElevatedUserToken) : undefined;
     }
@@ -133,7 +133,7 @@ class CodeReviewChatDeleter extends Chatter {
 exports.CodeReviewChatDeleter = CodeReviewChatDeleter;
 class CodeReviewChat extends Chatter {
     constructor(octokit, toolsAPI, issue, options, pullRequestNumber, _externalContributorPR) {
-        super(options.slackToken, options.codereviewChannel);
+        super(options.slackToken, options.codereviewChannelId);
         this.octokit = octokit;
         this.toolsAPI = toolsAPI;
         this.issue = issue;
@@ -171,13 +171,14 @@ class CodeReviewChat extends Chatter {
         const repoMessage = this.options.payload.repo_full_name === 'microsoft/vscode'
             ? ':'
             : ` (in ${this.options.payload.repo_full_name}):`;
-        const githubUrl = pr.url;
+        const githubUrl = `${pr.url}/files`;
         const vscodeDevUrl = pr.url.replace('https://', 'https://insiders.vscode.dev/');
-        const externalPrefix = this._externalContributorPR ? 'External PR: ' : '';
+        const externalPrefix = this._externalContributorPR ? '⚠️[EXTERNAL]⚠️ ' : '';
         const message = `${externalPrefix}*${cleanTitle}* by _${pr.owner}_${repoMessage} \`${diffMessage}\` <${githubUrl}|Review (GH)> | <${vscodeDevUrl}|Review (VSCode)>`;
         return message;
     }
     async run() {
+        var _a;
         // Must request the PR again from the octokit api as it may have changed since creation
         const prFromApi = (await this.octokit.pulls.get({
             pull_number: this.pullRequestNumber,
@@ -196,17 +197,36 @@ class CodeReviewChat extends Chatter {
             (0, utils_1.safeLog)('PR is from ignored repo, ignoring');
             return;
         }
+        const default_branch = (await this.octokit.repos.get({
+            owner: this.options.payload.owner,
+            repo: this.options.payload.repo,
+        })).data.default_branch;
         // TODO @lramos15 possibly make this configurable
-        if (pr.baseBranchName.startsWith('release')) {
-            (0, utils_1.safeLog)('PR is on a release branch, ignoring');
+        if (!pr.baseBranchName.startsWith(default_branch) || pr.baseBranchName.startsWith('release')) {
+            (0, utils_1.safeLog)('PR is on a non-main or release branch, ignoring');
             return;
+        }
+        let isEndGame = false;
+        try {
+            isEndGame = (_a = (await (0, utils_1.isInsiderFrozen)())) !== null && _a !== void 0 ? _a : false;
+        }
+        catch (error) {
+            (0, utils_1.safeLog)(`Error determining if insider is frozen: ${error.message}`);
         }
         // This is an external PR which already received one review and is just awaiting a second
+        const data = await this.issue.getIssue();
+        if (!data)
+            return;
         if (this._externalContributorPR) {
-            await this.postExternalPRMessage(pr);
+            const externalTasks = [];
+            const currentMilestone = await this.issue.getCurrentRepoMilestone(isEndGame);
+            if (!data.milestone && currentMilestone) {
+                externalTasks.push(this.issue.setMilestone(currentMilestone));
+            }
+            externalTasks.push(this.postExternalPRMessage(pr));
+            await Promise.all(externalTasks);
             return;
         }
-        const data = await this.issue.getIssue();
         const teamMembers = new Set((await this.toolsAPI.getTeamMembers()).map((t) => t.id));
         const author = data.author;
         // Author must have write access to the repo or be a bot
@@ -219,7 +239,7 @@ class CodeReviewChat extends Chatter {
             tasks.push(this.issue.addAssignee(author.name));
         }
         tasks.push((async () => {
-            const currentMilestone = await this.issue.getCurrentRepoMilestone();
+            const currentMilestone = await this.issue.getCurrentRepoMilestone(isEndGame);
             if (!data.milestone && currentMilestone) {
                 await this.issue.setMilestone(currentMilestone);
             }
@@ -244,19 +264,33 @@ class CodeReviewChat extends Chatter {
             (0, utils_1.safeLog)(message);
             await this.postMessage(message);
         })());
+        // Trigger build for forked PRs by adding a comment
+        if (pr.fork) {
+            tasks.push((async () => {
+                await this.octokit.issues.createComment({
+                    owner: this.options.payload.owner,
+                    repo: this.options.payload.repo,
+                    issue_number: this.pullRequestNumber,
+                    body: '⚠️ This PR originates from a fork. Due to security restrictions, pipelines from forks are no longer triggered automatically. [Learn more](https://learn.microsoft.com/en-us/azure/devops/pipelines/repos/github?view=azure-devops&tabs=yaml#comment-triggers).\n\nIf the changes appear safe, you can manually trigger the pipeline by commenting `/AzurePipelines run`.',
+                });
+            })());
+        }
         await Promise.all(tasks);
     }
 }
 exports.CodeReviewChat = CodeReviewChat;
-async function getTeamMemberReviews(octokit, teamMembers, prNumber, repo, owner, ghIssue) {
+async function getTeamMemberReviews(octokit, teamMembers, prNumber, repo, owner, ghIssue, isExternalPR) {
     var _a, _b, _c;
     const reviews = await octokit.pulls.listReviews({
         pull_number: prNumber,
         owner,
         repo,
     });
+    const pr = await ghIssue.getIssue();
+    if (!pr)
+        return [];
     // Get author of PR
-    const author = (await ghIssue.getIssue()).author.name;
+    const author = pr.author.name;
     // Get timestamp of last commit
     const lastCommitTimestamp = (_c = (_b = (_a = (await octokit.pulls.listCommits({
         pull_number: prNumber,
@@ -286,6 +320,11 @@ async function getTeamMemberReviews(octokit, teamMembers, prNumber, repo, owner,
         if (reviewTimestamp < lastCommitUnixTimestamp) {
             continue;
         }
+        // Check that the team member review occurred in the last 24 hours for external PRs
+        const twentyFourHoursAgo = Date.now() - 24 * 60 * 60 * 1000;
+        if (isExternalPR && reviewTimestamp < twentyFourHoursAgo) {
+            continue;
+        }
         const existingReview = latestReviews.get(review.user.login);
         if (!existingReview || reviewTimestamp > new Date(existingReview.submitted_at).getTime()) {
             latestReviews.set(review.user.login, review);
@@ -296,7 +335,10 @@ async function getTeamMemberReviews(octokit, teamMembers, prNumber, repo, owner,
 exports.getTeamMemberReviews = getTeamMemberReviews;
 async function meetsReviewThreshold(octokit, teamMembers, prNumber, repo, owner, ghIssue) {
     // Get author of PR
-    const author = (await ghIssue.getIssue()).author.name;
+    const pr = await ghIssue.getIssue();
+    if (!pr)
+        return false;
+    const author = pr.author.name;
     const teamMemberReviews = await getTeamMemberReviews(octokit, teamMembers, prNumber, repo, owner, ghIssue);
     // While more expensive to convert from Array -> Set -> Array, we want to ensure the same name isn't double counted if a user has multiple reviews
     const reviewerNames = Array.from(new Set(teamMemberReviews === null || teamMemberReviews === void 0 ? void 0 : teamMemberReviews.map((r) => { var _a, _b; return (_b = (_a = r.user) === null || _a === void 0 ? void 0 : _a.login) !== null && _b !== void 0 ? _b : 'Unknown'; })));
@@ -315,24 +357,4 @@ async function meetsReviewThreshold(octokit, teamMembers, prNumber, repo, owner,
     return meetsReviewThreshold;
 }
 exports.meetsReviewThreshold = meetsReviewThreshold;
-async function listAllMemberships(web) {
-    var _a, _b;
-    let groups;
-    const channels = [];
-    do {
-        try {
-            groups = (await web.conversations.list({
-                types: 'public_channel,private_channel',
-                cursor: (_a = groups === null || groups === void 0 ? void 0 : groups.response_metadata) === null || _a === void 0 ? void 0 : _a.next_cursor,
-                limit: 100,
-            }));
-            channels.push(...groups.channels);
-        }
-        catch (err) {
-            (0, utils_1.safeLog)(`Error listing channels: ${err}`);
-            groups = undefined;
-        }
-    } while ((_b = groups === null || groups === void 0 ? void 0 : groups.response_metadata) === null || _b === void 0 ? void 0 : _b.next_cursor);
-    return channels.filter((c) => c.is_member);
-}
 //# sourceMappingURL=CodeReviewChat.js.map

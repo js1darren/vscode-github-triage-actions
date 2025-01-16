@@ -2,9 +2,14 @@ name: 'Code Review Chat'
 description: 'Notify in chat about build results.'
 author: 'Jackson Kearl / Logan Ramos'
 inputs:
-  token:
-    description: GitHub token.
-    default: ${{ github.token }}
+  app_id:
+    description: GitHub App ID
+    required: true
+  app_installation_id:
+    description: GitHub App Installation ID
+    required: true
+  app_private_key:
+    description: GitHub App Private Key
     required: true
   slack_token:
     description: Slack token.
@@ -12,23 +17,11 @@ inputs:
   slack_user_token:
     description: 'Elevated user token for actions requiring admin'
     required: false
-  notification_channel:
+  notification_channel_id:
     description: 'Which channel to send notifications to. Defaults to none.'
     required: true
   slack_bot_name:
     description: 'Required when doing using in queue mode (deletions enabled on close)'
-    required: true
-  tenantId:
-    description: "The service tenant id of the service which serves the VS Code Tools API"
-    required: true
-  clientId:
-    description: "The service client id of the service which serves the VS Code Tools API"
-    required: true
-  clientSecret:
-    description: "The service client secret of the service which serves the VS Code Tools API"
-    required: true
-  clientScope:
-    description: "The service client scope of the service which serves the VS Code Tools API"
     required: true
   pull_request:
     description: 'Pull request object - used in webhooks'
@@ -46,5 +39,5 @@ inputs:
     description: 'Repository name - used in webhooks'
     required: false
 runs:
-  using: 'node16'
+  using: 'node20'
   main: 'index.js'

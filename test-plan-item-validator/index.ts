@@ -4,17 +4,18 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { OctoKitIssue } from '../api/octokit';
+import { Action } from '../common/Action';
 import { getRequiredInput } from '../common/utils';
 import { TestPlanItemValidator } from './TestPlanitemValidator';
-import { Action } from '../common/Action';
 
 class TestPlanItemValidatorAction extends Action {
 	id = 'TestPlanItemValidator';
 
 	async runValidation(issue: OctoKitIssue) {
+		const auth = await this.getToken();
 		await new TestPlanItemValidator(
 			issue,
-			getRequiredInput('token'),
+			auth ?? getRequiredInput('token'),
 			getRequiredInput('refLabel'),
 			getRequiredInput('label'),
 			getRequiredInput('invalidLabel'),

@@ -32,11 +32,13 @@ class OctoKit {
     }
     // TODO: just iterate over the issues in a page here instead of making caller do it
     async *query(query) {
+        var _a;
         const q = query.q + ` repo:${this.params.owner}/${this.params.repo}`;
+        const per_page = (_a = query.per_page) !== null && _a !== void 0 ? _a : 100;
         const options = {
             ...query,
             q,
-            per_page: 100,
+            per_page,
             headers: { Accept: 'application/vnd.github.squirrel-girl-preview+json' },
         };
         let pageNum = 0;
@@ -150,11 +152,15 @@ class OctoKit {
             throw err;
         }
     }
-    async readConfig(path) {
-        (0, utils_1.safeLog)('Reading config at ' + path);
-        const repoPath = `.github/${path}.json`;
+    async readConfig(configPath, configRepo) {
+        (0, utils_1.safeLog)(`Reading config at ${configPath} from ${configRepo !== null && configRepo !== void 0 ? configRepo : this.params.repo}`);
+        const repoPath = `.github/${configPath}.json`;
         try {
-            const data = (await this.octokit.rest.repos.getContent({ ...this.params, path: repoPath })).data;
+            const data = (await this.octokit.rest.repos.getContent({
+                owner: this.params.owner,
+                repo: configRepo !== null && configRepo !== void 0 ? configRepo : this.params.repo,
+                path: repoPath,
+            })).data;
             if ('type' in data && data.type === 'file' && 'content' in data) {
                 if (data.encoding === 'base64' && data.content) {
                     return JSON.parse(Buffer.from(data.content, 'base64').toString('utf-8'));
@@ -188,7 +194,8 @@ class OctoKit {
             }
         }));
     }
-    async getCurrentRepoMilestone() {
+    async getCurrentRepoMilestone(isEndGame) {
+        var _a;
         (0, utils_1.safeLog)(`Getting repo milestone for ${this.params.owner}/${this.params.repo}`);
         // Fetch all milestones open for this repo
         const allMilestones = (await this.octokit.rest.issues.listMilestones({
@@ -206,6 +213,14 @@ class OctoKit {
             .sort((a, b) => { var _a, _b; return +new Date((_a = a.due_on) !== null && _a !== void 0 ? _a : currentDate) - +new Date((_b = b.due_on) !== null && _b !== void 0 ? _b : currentDate); });
         if (possibleMilestones.length === 0) {
             return undefined;
+        }
+        if (isEndGame && possibleMilestones.length > 1) {
+            const timeDiff = new Date((_a = possibleMilestones[0].due_on) !== null && _a !== void 0 ? _a : currentDate).getTime() - currentDate.getTime();
+            const daysDiff = timeDiff / (1000 * 3600 * 24);
+            // If the milestone is less than 14 days away, use the next milestone
+            if (daysDiff < 14) {
+                return possibleMilestones[1].number;
+            }
         }
         return possibleMilestones[0].number;
     }
@@ -282,12 +297,22 @@ class OctoKitIssue extends OctoKit {
             return this.issueData;
         }
         (0, utils_1.safeLog)('Fetching issue ' + this.issueData.number);
-        const issue = (await this.octokit.rest.issues.get({
-            ...this.params,
-            issue_number: this.issueData.number,
-            mediaType: { previews: ['squirrel-girl'] },
-        })).data;
-        return (this.issueData = this.octokitIssueToIssue(issue));
+        try {
+            const issue = (await this.octokit.rest.issues.get({
+                ...this.params,
+                issue_number: this.issueData.number,
+                mediaType: { previews: ['squirrel-girl'] },
+            })).data;
+            return (this.issueData = this.octokitIssueToIssue(issue));
+        }
+        catch (err) {
+            const statusError = err;
+            if (statusError.status === 404) {
+                (0, utils_1.safeLog)('Issue not found');
+                return;
+            }
+            throw err;
+        }
     }
     async postComment(body) {
         (0, utils_1.safeLog)(`Posting comment on ${this.issueData.number}`);
@@ -317,12 +342,13 @@ class OctoKitIssue extends OctoKit {
             });
     }
     async *getComments(last) {
+        var _a;
         (0, utils_1.safeLog)('Fetching comments for ' + this.issueData.number);
         const response = this.octokit.paginate.iterator(this.octokit.rest.issues.listComments, {
             ...this.params,
             issue_number: this.issueData.number,
             per_page: 100,
-            ...(last ? { per_page: 1, page: (await this.getIssue()).numComments } : {}),
+            ...(last ? { per_page: 1, page: (_a = (await this.getIssue())) === null || _a === void 0 ? void 0 : _a.numComments } : {}),
         });
         for await (const page of response) {
             numRequests++;
@@ -393,12 +419,12 @@ class OctoKitIssue extends OctoKit {
         }
     }
     async getClosingInfo(alreadyChecked = []) {
-        var _a, _b, _c, _d, _e, _f, _g, _h;
+        var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
         if (alreadyChecked.includes(this.issueData.number)) {
             return undefined;
         }
         alreadyChecked.push(this.issueData.number);
-        if ((await this.getIssue()).open) {
+        if ((_a = (await this.getIssue())) === null || _a === void 0 ? void 0 : _a.open) {
             return;
         }
         const closingHashComment = /(?:\\|\/)closedWith (?:https:\/\/github\.com\/microsoft\/vscode\/commit\/)?([a-fA-F0-9]{7,40})/;
@@ -415,7 +441,7 @@ class OctoKitIssue extends OctoKit {
                 if ((timelineEvent.event === 'closed' || timelineEvent.event === 'merged') &&
                     timelineEvent.created_at &&
                     timelineEvent.commit_id &&
-                    ((_a = timelineEvent.commit_url) === null || _a === void 0 ? void 0 : _a.toLowerCase().includes(`/${this.params.owner}/${this.params.repo}/`.toLowerCase()))) {
+                    ((_b = timelineEvent.commit_url) === null || _b === void 0 ? void 0 : _b.toLowerCase().includes(`/${this.params.owner}/${this.params.repo}/`.toLowerCase()))) {
                     closingCommit = {
                         hash: timelineEvent.commit_id,
                         timestamp: +new Date(timelineEvent.created_at),
@@ -426,7 +452,7 @@ class OctoKitIssue extends OctoKit {
                 }
                 if (timelineEvent.created_at &&
                     timelineEvent.event === 'commented' &&
-                    !((_b = timelineEvent.body) === null || _b === void 0 ? void 0 : _b.includes('UNABLE_TO_LOCATE_COMMIT_MESSAGE')) &&
+                    !((_c = timelineEvent.body) === null || _c === void 0 ? void 0 : _c.includes('UNABLE_TO_LOCATE_COMMIT_MESSAGE')) &&
                     closingHashComment.test(timelineEvent.body)) {
                     closingCommit = {
                         hash: closingHashComment.exec(timelineEvent.body)[1],
@@ -434,8 +460,8 @@ class OctoKitIssue extends OctoKit {
                     };
                 }
                 if (timelineEvent.event === 'cross-referenced' &&
-                    ((_d = (_c = timelineEvent.source) === null || _c === void 0 ? void 0 : _c.issue) === null || _d === void 0 ? void 0 : _d.number) &&
-                    ((_g = (_f = (_e = timelineEvent.source) === null || _e === void 0 ? void 0 : _e.issue) === null || _f === void 0 ? void 0 : _f.pull_request) === null || _g === void 0 ? void 0 : _g.url.includes(`/${this.params.owner}/${this.params.repo}/`.toLowerCase()))) {
+                    ((_e = (_d = timelineEvent.source) === null || _d === void 0 ? void 0 : _d.issue) === null || _e === void 0 ? void 0 : _e.number) &&
+                    ((_h = (_g = (_f = timelineEvent.source) === null || _f === void 0 ? void 0 : _f.issue) === null || _g === void 0 ? void 0 : _g.pull_request) === null || _h === void 0 ? void 0 : _h.url.includes(`/${this.params.owner}/${this.params.repo}/`.toLowerCase()))) {
                     crossReferencing.push(timelineEvent.source.issue.number);
                 }
             }
@@ -448,7 +474,7 @@ class OctoKitIssue extends OctoKit {
                     number: id,
                 }).getClosingInfo(alreadyChecked);
                 if (closed) {
-                    if (Math.abs(closed.timestamp - ((_h = (await this.getIssue()).closedAt) !== null && _h !== void 0 ? _h : 0)) < 5000) {
+                    if (Math.abs(closed.timestamp - ((_k = (_j = (await this.getIssue())) === null || _j === void 0 ? void 0 : _j.closedAt) !== null && _k !== void 0 ? _k : 0)) < 5000) {
                         closingCommit = closed;
                         break;
                     }

@@ -22,6 +22,8 @@ export class ReleasePipeline {
 		for await (const page of this.github.query({ q: query })) {
 			for (const issue of page) {
 				const issueData = await issue.getIssue();
+				if (!issueData) continue;
+
 				if (issueData.labels.includes(this.notYetReleasedLabel) && issueData.open === false) {
 					await this.update(issue, latestRelease);
 					await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -32,8 +34,8 @@ export class ReleasePipeline {
 		}
 	}
 
-	private async commentUnableToFindCommitMessage(issue: GitHubIssue, location: 'repo' | 'issue') {
-		const key = `<!-- UNABLE_TO_LOCATE_COMMIT_MESSAGE ${location} -->`;
+	private async commentUnableToFindCommitMessage(issue: GitHubIssue) {
+		const key = `<!-- UNABLE_TO_LOCATE_COMMIT_MESSAGE -->`;
 
 		for await (const page of issue.getComments()) {
 			for (const comment of page) {
@@ -43,13 +45,9 @@ export class ReleasePipeline {
 			}
 		}
 
-		if (location === 'repo') {
-			await issue.postComment(`${key}
-Issue marked as unreleased but unable to locate closing commit in repo history. If this was closed in a separate repo you can add the \`${this.insidersReleasedLabel}\` label directly, or comment \`\\closedWith someShaThatWillbeReleasedWhenThisIsRelesed\`.`);
-		} else {
-			await issue.postComment(`${key}
-Issue marked as unreleased but unable to locate closing commit in issue timeline. You can manually reference a commit by commenting \`\\closedWith someCommitSha\`, or directly add the \`${this.insidersReleasedLabel}\` label if you know this has already been releaased`);
-		}
+		await issue.postComment(
+			`${key}\nIssue marked as unreleased but unable to locate closing commit in issue timeline. You can manually reference a commit by commenting \`\\closedWith someCommitSha\`, or directly add the \`${this.insidersReleasedLabel}\` label if you know this has already been released`,
+		);
 	}
 
 	private async update(issue: GitHubIssue, latestRelease: Release) {
@@ -57,7 +55,7 @@ Issue marked as unreleased but unable to locate closing commit in issue timeline
 
 		if (!closingHash) {
 			await issue.removeLabel(this.notYetReleasedLabel);
-			await this.commentUnableToFindCommitMessage(issue, 'issue');
+			await this.commentUnableToFindCommitMessage(issue);
 			return;
 		}
 
@@ -71,9 +69,12 @@ Issue marked as unreleased but unable to locate closing commit in issue timeline
 		} else if (releaseContainsCommit === 'no') {
 			await issue.removeLabel(this.insidersReleasedLabel);
 			await issue.addLabel(this.notYetReleasedLabel);
-		} else if ((await issue.getIssue()).labels.includes(this.notYetReleasedLabel)) {
-			await issue.removeLabel(this.notYetReleasedLabel);
-			await this.commentUnableToFindCommitMessage(issue, 'repo');
+		} else {
+			const ghIssue = await issue.getIssue();
+			if (ghIssue && ghIssue.labels.includes(this.notYetReleasedLabel)) {
+				await issue.removeLabel(this.notYetReleasedLabel);
+				await this.commentUnableToFindCommitMessage(issue);
+			}
 		}
 	}
 }
@@ -83,7 +84,7 @@ export const enrollIssue = async (issue: GitHubIssue, notYetReleasedLabel: strin
 	if (closingHash) {
 		await issue.addLabel(notYetReleasedLabel);
 		// Get the milestone linked to the current release and set it if the issue doesn't have one
-		const releaseMilestone = (await issue.getIssue()).milestone
+		const releaseMilestone = (await issue.getIssue())?.milestone
 			? undefined
 			: await issue.getCurrentRepoMilestone();
 		if (releaseMilestone !== undefined) {

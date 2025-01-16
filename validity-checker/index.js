@@ -4,17 +4,19 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 Object.defineProperty(exports, "__esModule", { value: true });
-const utils_1 = require("../common/utils");
-const CopyCat_1 = require("./CopyCat");
 const Action_1 = require("../common/Action");
-class CopyCatAction extends Action_1.Action {
+const ValidtyChecker_1 = require("./ValidtyChecker");
+class ValidtyCheckerAction extends Action_1.Action {
     constructor() {
         super(...arguments);
-        this.id = 'CopyCat';
+        this.id = 'ValidtyChecker';
     }
     async onOpened(issue) {
-        await new CopyCat_1.CopyCat(issue, (0, utils_1.getRequiredInput)('owner'), (0, utils_1.getRequiredInput)('repo')).run();
+        await new ValidtyChecker_1.ValidtyChecker(issue).run();
+    }
+    async onReopened(issue) {
+        await new ValidtyChecker_1.ValidtyChecker(issue).run();
     }
 }
-new CopyCatAction().run(); // eslint-disable-line
+new ValidtyCheckerAction().run(); // eslint-disable-line
 //# sourceMappingURL=index.js.map

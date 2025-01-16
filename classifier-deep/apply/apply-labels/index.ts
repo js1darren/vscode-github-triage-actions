@@ -5,22 +5,15 @@
 
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { context } from '@actions/github';
 import { OctoKit, OctoKitIssue } from '../../../api/octokit';
-import { getRequiredInput, getInput, safeLog, daysAgoToHumanReadbleDate } from '../../../common/utils';
-import { Action } from '../../../common/Action';
 import { VSCodeToolsAPIManager } from '../../../api/vscodeTools';
-
-const token = getRequiredInput('token');
-const apiConfig = {
-	tenantId: getRequiredInput('tenantId'),
-	clientId: getRequiredInput('clientId'),
-	clientSecret: getRequiredInput('clientSecret'),
-	clientScope: getRequiredInput('clientScope'),
-};
+import { Action, getAuthenticationToken } from '../../../common/Action';
+import { daysAgoToHumanReadbleDate, getInput, getRequiredInput, safeLog } from '../../../common/utils';
 
 const allowLabels = (getInput('allowLabels') || '').split('|');
 const debug = !!getInput('__debug');
+const repo = getRequiredInput('repo');
+const owner = getRequiredInput('owner');
 
 type ClassifierConfig = {
 	vacation?: string[];
@@ -49,12 +42,16 @@ class ApplyLabels extends Action {
 
 	async onTriggered(github: OctoKit) {
 		const config: ClassifierConfig = await github.readConfig(getRequiredInput('configPath'));
+		const token = await getAuthenticationToken();
 		const labelings: LabelingsFile = JSON.parse(
 			readFileSync(join(__dirname, '../issue_labels.json'), { encoding: 'utf8' }),
 		);
 
+		const vscodeToolsAPI = new VSCodeToolsAPIManager();
+		const triagers = await vscodeToolsAPI.getTriagerGitHubIds();
+
 		for (const labeling of labelings) {
-			const issue = new OctoKitIssue(token, context.repo, { number: labeling.number });
+			const issue = new OctoKitIssue(token, { owner, repo }, { number: labeling.number });
 
 			const potentialAssignees: string[] = [];
 			const addAssignee = async (assignee: string) => {
@@ -66,6 +63,12 @@ class ApplyLabels extends Action {
 			};
 
 			const issueData = await issue.getIssue();
+			if (!issueData) continue;
+
+			if (issueData.labels.includes('invalid')) {
+				safeLog(`issue ${labeling.number} is invalid, skipping`);
+				continue;
+			}
 
 			if (issueData.number !== labeling.number) {
 				safeLog(`issue ${labeling.number} moved to ${issueData.number}, skipping`);
@@ -78,6 +81,22 @@ class ApplyLabels extends Action {
 
 			if (!debug && (issueData.assignee || !allLabelsAllowed)) {
 				safeLog('skipping');
+				continue;
+			}
+
+			// Check if the issue has any cc'ed users and assign them if they are available
+			const issueBody = issueData.body;
+			const ccMatches = (issueBody.match(/@(\w+)/g) || []).map((match) => match.replace('@', ''));
+			let performedAssignment = false;
+			for (const ccMatch of ccMatches) {
+				if (triagers.includes(ccMatch)) {
+					safeLog("assigning cc'ed user", ccMatch);
+					performedAssignment = true;
+					await issue.addAssignee(ccMatch);
+				}
+			}
+
+			if (performedAssignment) {
 				continue;
 			}
 
@@ -144,7 +163,6 @@ class ApplyLabels extends Action {
 				}
 			}
 
-			let performedAssignment = false;
 			if (potentialAssignees.length && !debug) {
 				for (const assignee of potentialAssignees) {
 					const hasBeenAssigned = await issue.getAssigner(assignee).catch(() => undefined);
@@ -159,9 +177,6 @@ class ApplyLabels extends Action {
 			if (!performedAssignment) {
 				safeLog('could not find assignee, picking a random one...');
 				try {
-					const vscodeToolsAPI = new VSCodeToolsAPIManager(apiConfig);
-					const triagers = await vscodeToolsAPI.getTriagerGitHubIds();
-					safeLog('Acquired list of available triagers');
 					const available = triagers;
 					if (available) {
 						// Shuffle the array

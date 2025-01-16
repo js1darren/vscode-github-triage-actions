@@ -24,14 +24,14 @@ export interface GitHub {
 	releaseContainsCommit(release: string, commit: string): Promise<'yes' | 'no' | 'unknown'>;
 
 	/**
-	 * Returns what we think the current milestone for the repo is based on the due on date.
+	 * Returns what we think the current milestone for the repo is based on the due on date and if we are in endgame
 	 * @returns The milestone id if one is found, else undefined
 	 */
-	getCurrentRepoMilestone(): Promise<number | undefined>;
+	getCurrentRepoMilestone(isEndGame?: boolean): Promise<number | undefined>;
 }
 
 export interface GitHubIssue extends GitHub {
-	getIssue(): Promise<Issue>;
+	getIssue(): Promise<Issue | undefined>;
 
 	postComment(body: string): Promise<void>;
 	deleteComment(id: number): Promise<void>;
@@ -119,4 +119,5 @@ export interface Query {
 	q: string;
 	sort?: SortVar;
 	order?: SortOrder;
+	per_page?: number;
 }

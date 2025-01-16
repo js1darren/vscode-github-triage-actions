@@ -3,8 +3,12 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { PayloadRepository, WebhookPayload } from '@actions/github/lib/interfaces';
 import { Octokit } from '@octokit/rest';
-import { getRequiredInput, getInput, safeLog } from '../common/utils';
+import { OctoKitIssue } from '../api/octokit';
+import { VSCodeToolsAPIManager } from '../api/vscodeTools';
+import { Action } from '../common/Action';
+import { getInput, getRequiredInput, safeLog } from '../common/utils';
 import {
 	CodeReviewChat,
 	CodeReviewChatDeleter,
@@ -12,21 +16,10 @@ import {
 	getTeamMemberReviews,
 	meetsReviewThreshold,
 } from './CodeReviewChat';
-import { Action } from '../common/Action';
-import { OctoKitIssue } from '../api/octokit';
-import { PayloadRepository, WebhookPayload } from '@actions/github/lib/interfaces';
-import { VSCodeToolsAPIManager } from '../api/vscodeTools';
 
 const slackToken = getRequiredInput('slack_token');
 const elevatedUserToken = getInput('slack_user_token');
-const auth = getRequiredInput('token');
-const channel = getRequiredInput('notification_channel');
-const apiConfig = {
-	tenantId: getRequiredInput('tenantId'),
-	clientId: getRequiredInput('clientId'),
-	clientSecret: getRequiredInput('clientSecret'),
-	clientScope: getRequiredInput('clientScope'),
-};
+const channelId = getRequiredInput('notification_channel_id');
 
 class CodeReviewChatAction extends Action {
 	id = 'CodeReviewChat';
@@ -38,7 +31,7 @@ class CodeReviewChatAction extends Action {
 		await new CodeReviewChatDeleter(
 			slackToken,
 			elevatedUserToken,
-			channel,
+			channelId,
 			payload.pull_request.html_url,
 		).run();
 	}
@@ -59,6 +52,7 @@ class CodeReviewChatAction extends Action {
 			throw Error('expected payload to contain pull request and repository');
 		}
 
+		const auth = await this.getToken();
 		const github = new Octokit({ auth });
 
 		await new Promise((resolve) => setTimeout(resolve, 1 * 60 * 1000));
@@ -77,11 +71,11 @@ class CodeReviewChatAction extends Action {
 		}
 		return new CodeReviewChat(
 			github,
-			new VSCodeToolsAPIManager(apiConfig),
+			new VSCodeToolsAPIManager(),
 			issue,
 			{
 				slackToken,
-				codereviewChannel: channel,
+				codereviewChannelId: channelId,
 				payload: {
 					owner: payload.repository.owner.login,
 					repo: payload.repository.name,
@@ -103,8 +97,16 @@ class CodeReviewChatAction extends Action {
 		if (!payload.pull_request || !payload.repository) {
 			throw Error('expected payload to contain pull request url');
 		}
-		const toolsAPI = new VSCodeToolsAPIManager(apiConfig);
+
+		if (payload.pull_request.state === 'closed') {
+			// PR was merged and a review was submitted after merge. Skip posting message
+			safeLog(`PR was already merged. Skipping posting message`);
+			return;
+		}
+
+		const toolsAPI = new VSCodeToolsAPIManager();
 		const teamMembers = new Set((await toolsAPI.getTeamMembers()).map((t) => t.id));
+		const auth = await this.getToken();
 		const github = new Octokit({ auth });
 		const meetsThreshold = await meetsReviewThreshold(
 			github,
@@ -124,7 +126,7 @@ class CodeReviewChatAction extends Action {
 
 		// Check if the PR author is in the team
 		const author = payload.pull_request.user.login;
-		if (!teamMembers.has(author)) {
+		if (!teamMembers.has(author) && payload.pull_request.user?.type !== 'Bot') {
 			safeLog('PR author is not in the team, checking if they need to be posted for another review');
 			const teamMemberReviews = await getTeamMemberReviews(
 				github,
@@ -133,6 +135,7 @@ class CodeReviewChatAction extends Action {
 				payload.repository.name,
 				payload.repository.owner.login,
 				issue,
+				true /* isExternalPR */,
 			);
 			safeLog(`Found ${teamMemberReviews?.length ?? 0} reviews from team members`);
 			// Get only the approving reviews from team members
@@ -147,14 +150,46 @@ class CodeReviewChatAction extends Action {
 		}
 	}
 
+	// Handles the event when a review is assigned to a pull request
+	private async onAssignedReview(issue: OctoKitIssue, payload: WebhookPayload): Promise<void> {
+		// Ensure the payload contains pull request and repository information
+		if (!payload.pull_request || !payload.repository) {
+			throw Error('expected payload to contain pull request url');
+		}
+
+		// Get the issue data
+		const issueData = await issue.getIssue();
+		if (!issueData) return;
+
+		// If there are multiple assignees and the issue has the 'triage-needed' label
+		if (issueData.assignees.length > 1 && issueData.labels.includes('triage-needed')) {
+			// Get the username of the assigner of the first assignee
+			const assigner = await issue.getAssigner(issueData.assignees[0]);
+
+			// If the assigner is not the bot itself
+			if (assigner !== getRequiredInput('botName')) {
+				// Log the assigner and remove the 'triage-needed' label
+				safeLog(`Assigner: ${assigner}`);
+				await issue.removeLabel('triage-needed');
+				return;
+			}
+		}
+	}
+
 	protected override async onTriggered() {
 		// This function is only called during a manual workspace dispatch event
 		// caused by a webhook, so we know to expect some inputs.
 		const action = getRequiredInput('action');
 		const pull_request = JSON.parse(getRequiredInput('pull_request'));
+		const draft = pull_request.draft || false;
+		if (draft) {
+			safeLog('PR is draft, ignoring');
+			return;
+		}
+
 		const repository: PayloadRepository = JSON.parse(getRequiredInput('repository'));
 		const pr_number: number = parseInt(getRequiredInput('pr_number'));
-
+		const auth = await this.getToken();
 		const octokitIssue = new OctoKitIssue(
 			auth,
 			{ owner: repository.owner.login, repo: repository.name },
@@ -180,6 +215,9 @@ class CodeReviewChatAction extends Action {
 			case 'dismissed':
 			case 'synchronize':
 			case 'reopened':
+				break;
+			case 'assigned':
+				await this.onAssignedReview(octokitIssue, payload);
 				break;
 			default:
 				throw Error(`Unknown action: ${action}`);

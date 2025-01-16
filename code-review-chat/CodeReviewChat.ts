@@ -7,8 +7,8 @@ import { Octokit } from '@octokit/rest';
 import { WebClient } from '@slack/web-api';
 import { GitHubIssue } from '../api/api';
 import { OctoKitIssue } from '../api/octokit';
-import { safeLog } from '../common/utils';
 import { VSCodeToolsAPIManager } from '../api/vscodeTools';
+import { isInsiderFrozen, safeLog } from '../common/utils';
 
 interface PR {
 	number: number;
@@ -28,6 +28,8 @@ interface PR {
 	 */
 	headBranchName: string;
 	title: string;
+	headLabel: string;
+	fork: boolean;
 }
 
 // Some slack typings since the API isn't the best in terms of typings
@@ -49,7 +51,7 @@ interface SlackMessage {
 
 export interface Options {
 	slackToken: string;
-	codereviewChannel: string;
+	codereviewChannelId: string;
 	payload: {
 		owner: string;
 		repo: string;
@@ -72,24 +74,22 @@ export function createPRObject(pullRequestFromApi: any): PR {
 		baseBranchName: pullRequestFromApi.base.ref ?? '',
 		headBranchName: pullRequestFromApi.head.ref ?? '',
 		title: pullRequestFromApi.title,
+		headLabel: pullRequestFromApi.head.repo?.full_name || '',
+		fork: pullRequestFromApi.head.repo?.fork || false,
 	};
 	return pr;
 }
 
 class Chatter {
-	constructor(protected slackToken: string, protected notificationChannel: string) {}
+	constructor(protected slackToken: string, protected notificationChannelID: string) {}
 
 	async getChat(): Promise<{ client: WebClient; channel: string }> {
 		const web = new WebClient(this.slackToken);
-		const memberships = await listAllMemberships(web);
 
-		const codereviewChannel =
-			this.notificationChannel && memberships.find((m) => m.name === this.notificationChannel);
-
-		if (!codereviewChannel) {
-			throw Error(`Slack channel not found: ${this.notificationChannel}`);
+		if (!this.notificationChannelID) {
+			throw Error(`Slack channel not provided: ${this.notificationChannelID}`);
 		}
-		return { client: web, channel: codereviewChannel.id };
+		return { client: web, channel: this.notificationChannelID };
 	}
 }
 
@@ -98,10 +98,10 @@ export class CodeReviewChatDeleter extends Chatter {
 	constructor(
 		slackToken: string,
 		slackElevatedUserToken: string | undefined,
-		notificationChannel: string,
+		notificationChannelId: string,
 		private prUrl: string,
 	) {
-		super(slackToken, notificationChannel);
+		super(slackToken, notificationChannelId);
 		this.elevatedClient = slackElevatedUserToken ? new WebClient(slackElevatedUserToken) : undefined;
 	}
 
@@ -200,7 +200,7 @@ export class CodeReviewChat extends Chatter {
 		private readonly pullRequestNumber: number,
 		private readonly _externalContributorPR?: boolean,
 	) {
-		super(options.slackToken, options.codereviewChannel);
+		super(options.slackToken, options.codereviewChannelId);
 	}
 
 	private async postMessage(message: string) {
@@ -238,10 +238,10 @@ export class CodeReviewChat extends Chatter {
 				? ':'
 				: ` (in ${this.options.payload.repo_full_name}):`;
 
-		const githubUrl = pr.url;
+		const githubUrl = `${pr.url}/files`;
 		const vscodeDevUrl = pr.url.replace('https://', 'https://insiders.vscode.dev/');
 
-		const externalPrefix = this._externalContributorPR ? 'External PR: ' : '';
+		const externalPrefix = this._externalContributorPR ? '⚠️[EXTERNAL]⚠️ ' : '';
 		const message = `${externalPrefix}*${cleanTitle}* by _${pr.owner}_${repoMessage} \`${diffMessage}\` <${githubUrl}|Review (GH)> | <${vscodeDevUrl}|Review (VSCode)>`;
 		return message;
 	}
@@ -269,19 +269,40 @@ export class CodeReviewChat extends Chatter {
 			return;
 		}
 
+		const default_branch = (
+			await this.octokit.repos.get({
+				owner: this.options.payload.owner,
+				repo: this.options.payload.repo,
+			})
+		).data.default_branch;
+
 		// TODO @lramos15 possibly make this configurable
-		if (pr.baseBranchName.startsWith('release')) {
-			safeLog('PR is on a release branch, ignoring');
+		if (!pr.baseBranchName.startsWith(default_branch) || pr.baseBranchName.startsWith('release')) {
+			safeLog('PR is on a non-main or release branch, ignoring');
 			return;
+		}
+
+		let isEndGame = false;
+		try {
+			isEndGame = (await isInsiderFrozen()) ?? false;
+		} catch (error) {
+			safeLog(`Error determining if insider is frozen: ${(error as Error).message}`);
 		}
 
 		// This is an external PR which already received one review and is just awaiting a second
+		const data = await this.issue.getIssue();
+		if (!data) return;
 		if (this._externalContributorPR) {
-			await this.postExternalPRMessage(pr);
+			const externalTasks = [];
+			const currentMilestone = await this.issue.getCurrentRepoMilestone(isEndGame);
+			if (!data.milestone && currentMilestone) {
+				externalTasks.push(this.issue.setMilestone(currentMilestone));
+			}
+			externalTasks.push(this.postExternalPRMessage(pr));
+			await Promise.all(externalTasks);
 			return;
 		}
 
-		const data = await this.issue.getIssue();
 		const teamMembers = new Set((await this.toolsAPI.getTeamMembers()).map((t) => t.id));
 		const author = data.author;
 		// Author must have write access to the repo or be a bot
@@ -297,7 +318,7 @@ export class CodeReviewChat extends Chatter {
 
 		tasks.push(
 			(async () => {
-				const currentMilestone = await this.issue.getCurrentRepoMilestone();
+				const currentMilestone = await this.issue.getCurrentRepoMilestone(isEndGame);
 				if (!data.milestone && currentMilestone) {
 					await this.issue.setMilestone(currentMilestone);
 				}
@@ -335,21 +356,22 @@ export class CodeReviewChat extends Chatter {
 			})(),
 		);
 
+		// Trigger build for forked PRs by adding a comment
+		if (pr.fork) {
+			tasks.push(
+				(async () => {
+					await this.octokit.issues.createComment({
+						owner: this.options.payload.owner,
+						repo: this.options.payload.repo,
+						issue_number: this.pullRequestNumber,
+						body: '⚠️ This PR originates from a fork. Due to security restrictions, pipelines from forks are no longer triggered automatically. [Learn more](https://learn.microsoft.com/en-us/azure/devops/pipelines/repos/github?view=azure-devops&tabs=yaml#comment-triggers).\n\nIf the changes appear safe, you can manually trigger the pipeline by commenting `/AzurePipelines run`.',
+					});
+				})(),
+			);
+		}
+
 		await Promise.all(tasks);
 	}
-}
-
-interface Channel {
-	id: string;
-	name: string;
-	is_member: boolean;
-}
-
-interface ConversationsList {
-	channels: Channel[];
-	response_metadata?: {
-		next_cursor?: string;
-	};
 }
 
 export async function getTeamMemberReviews(
@@ -359,14 +381,18 @@ export async function getTeamMemberReviews(
 	repo: string,
 	owner: string,
 	ghIssue: GitHubIssue | OctoKitIssue,
+	isExternalPR?: boolean,
 ) {
 	const reviews = await octokit.pulls.listReviews({
 		pull_number: prNumber,
 		owner,
 		repo,
 	});
+
+	const pr = await ghIssue.getIssue();
+	if (!pr) return [];
 	// Get author of PR
-	const author = (await ghIssue.getIssue()).author.name;
+	const author = pr.author.name;
 	// Get timestamp of last commit
 	const lastCommitTimestamp = (
 		await octokit.pulls.listCommits({
@@ -400,6 +426,13 @@ export async function getTeamMemberReviews(
 		if (reviewTimestamp < lastCommitUnixTimestamp) {
 			continue;
 		}
+
+		// Check that the team member review occurred in the last 24 hours for external PRs
+		const twentyFourHoursAgo = Date.now() - 24 * 60 * 60 * 1000;
+		if (isExternalPR && reviewTimestamp < twentyFourHoursAgo) {
+			continue;
+		}
+
 		const existingReview = latestReviews.get(review.user.login);
 		if (!existingReview || reviewTimestamp > new Date(existingReview.submitted_at).getTime()) {
 			latestReviews.set(review.user.login, review);
@@ -417,7 +450,9 @@ export async function meetsReviewThreshold(
 	ghIssue: GitHubIssue | OctoKitIssue,
 ) {
 	// Get author of PR
-	const author = (await ghIssue.getIssue()).author.name;
+	const pr = await ghIssue.getIssue();
+	if (!pr) return false;
+	const author = pr.author.name;
 	const teamMemberReviews = await getTeamMemberReviews(
 		octokit,
 		teamMembers,
@@ -440,23 +475,4 @@ export async function meetsReviewThreshold(
 		safeLog(`Met review threshold: ${reviewerNames.join(', ')}`);
 	}
 	return meetsReviewThreshold;
-}
-
-async function listAllMemberships(web: WebClient) {
-	let groups: ConversationsList | undefined;
-	const channels: Channel[] = [];
-	do {
-		try {
-			groups = (await web.conversations.list({
-				types: 'public_channel,private_channel',
-				cursor: groups?.response_metadata?.next_cursor,
-				limit: 100,
-			})) as unknown as ConversationsList;
-			channels.push(...groups.channels);
-		} catch (err) {
-			safeLog(`Error listing channels: ${err}`);
-			groups = undefined;
-		}
-	} while (groups?.response_metadata?.next_cursor);
-	return channels.filter((c) => c.is_member);
 }

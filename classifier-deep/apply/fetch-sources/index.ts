@@ -3,13 +3,13 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { getInput, setFailed } from '@actions/core';
+import { execSync } from 'child_process';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
 import { OctoKit } from '../../../api/octokit';
-import { getRequiredInput, daysAgoToHumanReadbleDate, normalizeIssue, safeLog } from '../../../common/utils';
 import { Action } from '../../../common/Action';
-import { execSync } from 'child_process';
-import { getInput, setFailed } from '@actions/core';
+import { daysAgoToHumanReadbleDate, getRequiredInput, normalizeIssue, safeLog } from '../../../common/utils';
 import { downloadBlobFile } from '../../blobStorage';
 
 const minToDay = 0.0007;
@@ -24,18 +24,32 @@ const until = daysAgoToHumanReadbleDate(+getRequiredInput('until') * minToDay);
 const createdQuery = `created:` + (from ? `${from}..${until}` : `<${until}`);
 
 const blobContainer = getRequiredInput('blobContainerName');
-const blobStorageKey = getRequiredInput('blobStorageKey');
-
+const repo = getRequiredInput('repo');
+const owner = getRequiredInput('owner');
 class FetchIssues extends Action {
 	id = 'Clasifier-Deep/Apply/FetchIssues';
 
 	async onTriggered(github: OctoKit) {
-		const query = `${createdQuery} is:open no:assignee ${excludeLabels}`;
+		const query = `repo:${owner}/${repo} ${createdQuery} is:open no:assignee ${excludeLabels}`;
 
 		const data: { number: number; contents: string }[] = [];
 		for await (const page of github.query({ q: query })) {
 			for (const issue of page) {
 				const issueData = await issue.getIssue();
+				if (!issueData) continue;
+
+				// Probably spam. Tagged for later review
+				if (issueData.author.name === 'ghost') {
+					safeLog(`Tagging issue  #${issueData.number} as invalid`);
+					try {
+						await issue.addLabel('invalid');
+						await issue.closeIssue('not_planned');
+						await issue.lockIssue();
+					} catch (e) {
+						safeLog(`Failed to triage invalid issue #${issueData.number}: ${e}`);
+					}
+					continue;
+				}
 
 				let performedPRAssignment = false;
 				let additionalInfo = '';
@@ -52,6 +66,8 @@ class FetchIssues extends Action {
 								const linkedIssueData = await github
 									.getIssueByNumber(+linkedIssue)
 									.getIssue();
+								if (!linkedIssueData) continue;
+
 								const normalized = normalizeIssue(linkedIssueData);
 								additionalInfo = `\n\n${normalized.title}\n\n${normalized.body}`;
 								const linkedIssueAssignee = linkedIssueData.assignees[0];
@@ -88,9 +104,9 @@ class FetchIssues extends Action {
 		writeFileSync(join(__dirname, '../configuration.json'), JSON.stringify(config));
 
 		safeLog('dowloading area model');
-		await downloadBlobFile('area_model.zip', blobContainer, blobStorageKey);
+		await downloadBlobFile('area_model.zip', blobContainer);
 		safeLog('dowloading assignee model');
-		await downloadBlobFile('assignee_model.zip', blobContainer, blobStorageKey);
+		await downloadBlobFile('assignee_model.zip', blobContainer);
 
 		const classifierDeepRoot = join(__dirname, '..', '..');
 		const blobStorage = join(classifierDeepRoot, 'blobStorage');

@@ -3,25 +3,19 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { getRequiredInput } from '../common/utils';
-import { Action } from '../common/Action';
-import { ReviewReminder } from './ReviewReminder';
 import { VSCodeToolsAPIManager } from '../api/vscodeTools';
+import { Action } from '../common/Action';
+import { getRequiredInput } from '../common/utils';
+import { ReviewReminder } from './ReviewReminder';
 
 const slackToken = getRequiredInput('slack_token');
-const auth = getRequiredInput('token');
-const apiConfig = {
-	tenantId: getRequiredInput('tenantId'),
-	clientId: getRequiredInput('clientId'),
-	clientSecret: getRequiredInput('clientSecret'),
-	clientScope: getRequiredInput('clientScope'),
-};
 
 class ReviewReminderAction extends Action {
 	id = 'ReviewReminder';
 
 	async onTriggered() {
-		await new ReviewReminder(auth, slackToken, new VSCodeToolsAPIManager(apiConfig)).run();
+		const auth = await this.getToken();
+		await new ReviewReminder(auth, slackToken, new VSCodeToolsAPIManager()).run();
 	}
 }
 

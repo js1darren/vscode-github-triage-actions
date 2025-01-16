@@ -23,14 +23,14 @@ Additionally, in `./api`, we have a wrapper around the Octokit instance that can
 
 ### Code Layout
 
-The `api` directory contains `api.ts`, which provides an interface for interacting with github issues. This is implemented both by `octokit.ts` and `testbed.ts`. Octokit will talk to github, testbed mimics GitHub locally, to help with writing unit tests.
+The `api` directory contains `api.ts`, which provides an interface for interacting with GitHub issues. This is implemented both by `octokit.ts` and `testbed.ts`. Octokit will talk to GitHub, testbed mimics GitHub locally, to help with writing unit tests.
 
 The `utils` directory contains various commands to help with interacting with GitHub/other services, which do not have a corresponding mocked version. Thus when using these in code that will be unit tested, it is a good idea to manually mock the calls, using `nock` or similar.
 
 The rest of the directories contain three files:
-- `index.ts`: This file is the entry point for actions. It should be the only file in the directory to use Action-specific code, such as any imports from `@actions/`. In most cases it should simply gather any required config data, create an `octokit` instance (see `api` section above) and invoke the command. By keeping Action specific code seprate from the rest of the logic, it is easy to extend these commands to run via Apps, or even via webhooks to Azure Funtions or similar.
-- `Command.ts`: This file contains the core logic for the command. The commands should operate on the Github interface in `api`, so that they may be run against either GitHub proper or the Testbed.
-- `Command.test.ts`: This file contains tests for the command. Tests should invoke the command using a `Testbed` instance, and preferably verify the command works by querying through the `Github` interface, though there are some convenience commands implemented directly on `Testbed` for ease of testing.
+- `index.ts`: This file is the entry point for actions. It should be the only file in the directory to use Action-specific code, such as any imports from `@actions/`. In most cases it should simply gather any required config data, create an `octokit` instance (see `api` section above) and invoke the command. By keeping Action specific code separate from the rest of the logic, it is easy to extend these commands to run via Apps, or even via webhooks to Azure Functions or similar.
+- `Command.ts`: This file contains the core logic for the command. The commands should operate on the GitHub interface in `api`, so that they may be run against either GitHub proper or the Testbed.
+- `Command.test.ts`: This file contains tests for the command. Tests should invoke the command using a `Testbed` instance, and preferably verify the command works by querying through the `GitHub` interface, though there are some convenience commands implemented directly on `Testbed` for ease of testing.
 - `cpi.ts`: This is not present in every directory, but when present allows for running the action via command line, by running `node action/cli.js` with appropriate flags.
 
 ## Action Descriptions
@@ -50,7 +50,7 @@ inputs:
     description: Label of issues which are released and thus able to be verified
     required: true
   verifiedLabel:
-    description: Label of issues that are laready verified and shouldn't be further interacted with
+    description: Label of issues that are already verified and shouldn't be further interacted with
     required: true
   authorVerificationRequestedLabel:
     description: Label added by issue fixer to signal that the author can verify the issue
@@ -65,7 +65,7 @@ This setup is more involved and detailed in the [Action's README](/classifier-de
 
 ### Classifier
 
-This classifier generates assignees and lables using a model stored in Azure Blob storage and generated using a GitHub Actions runner.
+This classifier generates assignees and labels using a model stored in Azure Blob storage and generated using a GitHub Actions runner.
 
 The full classifier workflow is a 2-part process (Train, Apply), with each part consisting of several individual Actions. It may be helpful to see how this is configured in the [vscode-remote-release repository](https://github.com/microsoft/vscode-remote-release/tree/master/.github/workflows).
 
@@ -82,9 +82,9 @@ inputs:
     description: GitHub token with issue, comment, and label read/write permissions
     default: ${{ github.token }}
   areas:
-    description: Pipe-seperated list of feature-areas to classify
+    description: Pipe-separated list of feature-areas to classify
   assignees:
-    description: Pipe-seperated list of assignees to classify
+    description: Pipe-separated list of assignees to classify
 ```
 
 ##### generate-models
@@ -104,9 +104,6 @@ inputs:
     default: ${{ github.token }}
   blobContainerName:
     description: Name of Azure Storage container
-    required: true
-  blobStorageKey:
-    description: Access string for blob storage account
     required: true
 ```
 
@@ -131,9 +128,6 @@ inputs:
   blobContainerName:
     description: Name of Azure Storage container
     required: true
-  blobStorageKey:
-    description: Access string for blob storage account
-    required: true
 ```
 
 ##### generate-labels
@@ -144,7 +138,7 @@ run: python ./actions/classifier/apply/generate-labels/main.py
 ```
 
 ##### apply-labels
-Applies labels generated from the python script back to thier respective issues
+Applies labels generated from the python script back to their respective issues
 
 ```yml
 inputs:
@@ -161,7 +155,7 @@ inputs:
 
 #### Monitor
 
-This action monitors unassign events and reports them back to app insights for analysis.
+This action monitors `unassign` events and reports them back to app insights for analysis.
 
 ```yaml
 inputs:
@@ -240,7 +234,7 @@ inputs:
     description: GitHub token with issue, comment, and label read/write permissions
     default: ${{ github.token }}
   nonEnglishLabel:
-    description: Label to add when issues are not written in english
+    description: Label to add when issues are not written in English
     required: true
   needsMoreInfoLabel:
     description: Optional label to add for triggering the 'needs more info' bot to close issues that are not translated
@@ -308,7 +302,7 @@ inputs:
 ```
 
 ### Locker
-Lock issues and PRs that have been closed and not updated for some time.
+Lock issues and/or PRs that have been closed and not updated for some time.
 
 ```yml
 inputs:
@@ -327,12 +321,14 @@ inputs:
     description: items with this label will not be automatically locked, until they also have the until label
   labelUntil:
     description: items with this will not automatically locked, even if they have the ignoreLabelUntil label
+  typeIs:
+    description: either 'issue' or 'pr' to limit the query to only those types
 ```
 
 ### Needs More Info Closer
 Close issues that are marked a `needs more info` label and were last interacted with by a contributor or bot, after some time has passed.
 
-Can also ping the assignee if the last comment was by someonne other than a team member or bot.
+Can also ping the assignee if the last comment was by someone other than a team member or bot.
 
 ```yml
 inputs:
@@ -353,7 +349,7 @@ inputs:
     description: Days to wait before pinging the assignee
     required: true
   pingComment:
-    description: Comment to add whenn pinging assignee. ${assignee} and ${author} are replaced.
+    description: Comment to add when pinging assignee. ${assignee} and ${author} are replaced.
 ```
 
 ### New Release
